@@ -1,0 +1,48 @@
+name: Daily Naver Research Hybrid Brief
+
+on:
+  schedule:
+    # 평일 오전 07:35 KST (전일 22:35 UTC) 자동 실행
+    - cron: "35 22 * * 0-4"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run research brief pipeline
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WEB_APP_URL: ${{ vars.WEB_APP_URL || 'https://rlarmsghd13-wq.github.io/naver-research-brief/' }}
+        run: |
+          python main.py
+
+      - name: Commit and push updated magazine docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update daily research magazine ($(date +'%Y-%m-%d'))"
+            git push
+          else
+            echo "No changes to commit."
+          fi
