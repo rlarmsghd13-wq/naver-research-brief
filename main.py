@@ -6,6 +6,7 @@ from src.fetcher import fetch_daily_reports, download_pdf
 from src.chart_extractor import extract_pdf_content_and_candidates, publish_chart_images
 from src.analyzer import select_top_reports, analyze_report_multimodal
 from src.web_builder import save_magazine_data
+from src.card_generator import generate_card_image
 from src.notifier import send_hybrid_notification
 
 
@@ -46,7 +47,7 @@ def run_pipeline(target_date: str = "", top_n: int = 3, dry_run: bool = False):
         )
         print(f"  - 최종 선정 차트 {len(charts)}장 발행: {[c['page'] for c in charts]}")
 
-        analyzed_items.append({
+        item_data = {
             "research_id": rid,
             "title": rep["title"],
             "broker": rep["broker"],
@@ -64,7 +65,15 @@ def run_pipeline(target_date: str = "", top_n: int = 3, dry_run: bool = False):
             "key_takeaways": analysis.get("key_takeaways", []),
             "glossary": analysis.get("glossary", []),
             "charts": [{"page": c["page"], "url": c["url"]} for c in charts],
-        })
+        }
+        try:
+            card_url = generate_card_image(item_data, idx, actual_date)
+            item_data["card_url"] = card_url
+            print(f"  - 카드뉴스 생성 완료: {card_url}")
+        except Exception as e:
+            print(f"  - 카드뉴스 생성 실패 (무시): {e}")
+
+        analyzed_items.append(item_data)
 
     if not analyzed_items:
         print("[중단] 분석에 성공한 리포트가 없습니다.")

@@ -30,18 +30,29 @@ def send_hybrid_notification(payload: Dict) -> bool:
     if not picks:
         return False
 
-    lines = [f"☀️ <b>{html.escape(date_str)} 네이버 리서치 모닝 픽</b>\n"]
+    lines = [f"☀️ <b>{html.escape(date_str)} 네이버 리서치 모닝 픽</b>"]
     for idx, p in enumerate(picks, 1):
         broker = html.escape(p.get("broker", ""))
         title = html.escape(p.get("title", ""))
-        hook = html.escape(p.get("one_line_hook", ""))
         tag = html.escape(p.get("category_tag", ""))
+        raw_hook = (p.get("one_line_hook") or "").strip()
+
+        # 2줄 요약 보장: 줄바꿈이 없으면 executive_summary 첫 문장을 보충해 2줄로 구성
+        hook_lines = [ln.strip() for ln in raw_hook.splitlines() if ln.strip()]
+        if len(hook_lines) < 2:
+            exec_sum = (p.get("executive_summary") or "").replace("🎯", "").strip()
+            sentences = [s.strip() for s in exec_sum.split(". ") if s.strip()]
+            if sentences:
+                extra = sentences[0] if not hook_lines else (sentences[1] if len(sentences) > 1 else sentences[0])
+                if extra and extra not in raw_hook:
+                    hook_lines.append(extra[:65] + ("..." if len(extra) > 65 else ""))
+
+        formatted_hook = "\n".join(f"   • {html.escape(ln)}" for ln in hook_lines[:2])
         lines.append(
-            f"<b>{idx}. [{broker}] {title}</b> <i>({tag})</i>\n"
-            f"   ➔ {hook}"
+            f"<b>{idx}. [{broker}] {title}</b> <i>({tag})</i>\n{formatted_hook}"
         )
 
-    lines.append("\n📊 <i>핵심 차트 확대 · 독해 팁 · 금융 용어 해설은 아래 매거진에서 바로 확인하세요!</i>")
+    lines.append("📊 <i>고화질 차트 확대 · 독해 팁 · 용어 해설은 아래 매거진에서 확인하세요!</i>")
     message_text = "\n\n".join(lines)
 
     # HTTPS URL이 있을 때만 인라인 키보드 버튼 구성
@@ -54,7 +65,15 @@ def send_hybrid_notification(payload: Dict) -> bool:
     elif web_url:
         message_text += f"\n\n🔗 매거진 주소: {html.escape(web_url)}"
 
-    # 대표 차트 이미지 (Pick 1의 첫 번째 차트)
+    # 각 Pick별 카드뉴스 이미지 경로 수집
+    card_items = []
+    for idx, p in enumerate(picks, 1):
+        c_rel = p.get("card_url", "")
+        c_abs = os.path.join(DOCS_DIR, c_rel) if c_rel else ""
+        if c_abs and os.path.exists(c_abs):
+            card_items.append((idx, p, c_abs))
+
+    # 카드뉴스가 없을 때 폴백: 대표 차트 이미지 1장
     lead_chart_path = ""
     lead_charts = picks[0].get("charts", [])
     if lead_charts and lead_charts[0].get("url"):
@@ -63,11 +82,42 @@ def send_hybrid_notification(payload: Dict) -> bool:
     all_ok = True
     for cid in chat_ids:
         try:
-            # 1) 대표 차트가 있으면 포토 카드 1장 먼저 전송 (간단 캡션)
-            if lead_chart_path and os.path.exists(lead_chart_path):
+            # 1) Pick별 카드뉴스 앨범(sendMediaGroup) 전송
+            if len(card_items) >= 2:
+                media = []
+                files = {}
+                opened = []
+                for idx, p, c_abs in card_items:
+                    attach_name = f"card_{idx}"
+                    f_obj = open(c_abs, "rb")
+                    opened.append(f_obj)
+                    files[attach_name] = (os.path.basename(c_abs), f_obj, "image/png")
+                    entry = {
+                        "type": "photo",
+                        "media": f"attach://{attach_name}",
+                    }
+                    if idx == 1:
+                        entry["caption"] = f"🃏 <b>{html.escape(date_str)} 모닝 픽 카드뉴스 ({len(card_items)}장)</b>"
+                        entry["parse_mode"] = "HTML"
+                    media.append(entry)
+
+                try:
+                    mg_resp = requests.post(
+                        f"https://api.telegram.org/bot{token}/sendMediaGroup",
+                        data={"chat_id": cid, "media": json.dumps(media, ensure_ascii=False)},
+                        files=files,
+                        timeout=45,
+                    )
+                    if not mg_resp.ok:
+                        print(f"[텔레그램] 카드뉴스 앨범 전송 실패 ({cid}): {mg_resp.text}")
+                finally:
+                    for f_obj in opened:
+                        f_obj.close()
+            elif len(card_items) == 1 or (lead_chart_path and os.path.exists(lead_chart_path)):
+                img_path = card_items[0][2] if card_items else lead_chart_path
                 lead_title = picks[0].get("chart_title") or picks[0].get("title", "")
-                photo_caption = f"📈 <b>오늘의 대표 차트 ({picks[0].get('broker', '')})</b>\n{html.escape(lead_title)}"
-                with open(lead_chart_path, "rb") as img_f:
+                photo_caption = f"📈 <b>오늘의 대표 카드 ({picks[0].get('broker', '')})</b>\n{html.escape(lead_title)}"
+                with open(img_path, "rb") as img_f:
                     p_resp = requests.post(
                         f"https://api.telegram.org/bot{token}/sendPhoto",
                         data={
@@ -79,7 +129,7 @@ def send_hybrid_notification(payload: Dict) -> bool:
                         timeout=30,
                     )
                     if not p_resp.ok:
-                        print(f"[텔레그램] 대표 차트 전송 실패 ({cid}): {p_resp.text}")
+                        print(f"[텔레그램] 대표 이미지 전송 실패 ({cid}): {p_resp.text}")
 
             # 2) Pick 1~3 요약 + 원터치 매거진 버튼 메시지 전송
             msg_data = {

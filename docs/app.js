@@ -122,8 +122,15 @@
     const p = picks[activePickIndex];
     if (!p) return;
 
-    const charts = p.charts || [];
-    const curChart = charts[activeChartIndex] || charts[0];
+    const rawCharts = p.charts || [];
+    const mediaList = rawCharts.map((c, i) => ({
+      url: c.url,
+      label: rawCharts.length > 1 ? `차트 ${i + 1} (${c.page}p)` : `핵심 차트 (${c.page}p)`,
+    }));
+    if (p.card_url) {
+      mediaList.push({ url: p.card_url, label: "🃏 요약 카드뉴스" });
+    }
+    const curChart = mediaList[activeChartIndex] || mediaList[0];
 
     const chartHtml = curChart
       ? `
@@ -136,12 +143,12 @@
           <img src="${escapeHtml(curChart.url)}" alt="${escapeHtml(p.chart_title || p.title)}" />
         </div>
         ${
-          charts.length > 1
+          mediaList.length > 1
             ? `<div class="chart-pager">
-                ${charts
+                ${mediaList
                   .map(
                     (c, i) =>
-                      `<button class="chart-page-btn ${i === activeChartIndex ? "active" : ""}" data-cidx="${i}">차트 ${i + 1} (${c.page}p)</button>`
+                      `<button class="chart-page-btn ${i === activeChartIndex ? "active" : ""}" data-cidx="${i}">${escapeHtml(c.label)}</button>`
                   )
                   .join("")}
                </div>`
@@ -209,7 +216,7 @@
     const chartFrame = document.getElementById("chartFrame");
     if (chartFrame && curChart) {
       chartFrame.addEventListener("click", () => {
-        openLightbox(curChart.url, `${p.broker} · ${p.chart_title || p.title} (${curChart.page}p)`);
+        openLightbox(curChart.url, `${p.broker} · ${p.chart_title || p.title} (${curChart.label})`);
       });
     }
 
