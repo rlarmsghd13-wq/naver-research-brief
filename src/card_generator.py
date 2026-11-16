@@ -1,7 +1,6 @@
 import os
-import textwrap
 from typing import Dict, List, Optional
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 from .config import DOCS_DIR
 
 CARDS_DIR = os.path.join(DOCS_DIR, "assets", "cards")
@@ -60,112 +59,120 @@ def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
     return lines
 
 
+def _trim_whitespace(im: Image.Image, margin: int = 16) -> Image.Image:
+    """PDF 렌더링 이미지의 불필요한 바깥 흰 여백을 자동으로 잘라내어 차트를 더 크게 표시한다."""
+    bg = Image.new("RGB", im.size, (255, 255, 255))
+    diff = ImageChops.difference(im.convert("RGB"), bg)
+    bbox = diff.getbbox()
+    if not bbox:
+        return im
+    left = max(0, bbox[0] - margin)
+    top = max(0, bbox[1] - margin)
+    right = min(im.width, bbox[2] + margin)
+    bottom = min(im.height, bbox[3] + margin)
+    return im.crop((left, top, right, bottom))
+
+
 def _draw_rounded_rect(draw: ImageDraw.ImageDraw, xy, radius: int, fill, outline=None, width: int = 1):
     draw.rounded_rectangle(xy, radius=radius, fill=fill, outline=outline, width=width)
 
 
 def generate_card_image(item: Dict, index: int, date_str: str) -> str:
     """
-    단일 리포트(Pick)에 대한 1080x1350 모바일 카드뉴스 PNG를 생성하고 상대 URL을 반환한다.
+    단일 리포트(Pick)에 대한 차트 중심 대형 카드뉴스 PNG를 생성하고 상대 URL을 반환한다.
+    상단에는 제목과 1줄 핵심만 슬림하게 배치하고, 나머지 영역 전체를 고화질 차트로 채운다.
     """
     out_dir = os.path.join(CARDS_DIR, date_str)
     os.makedirs(out_dir, exist_ok=True)
 
-    W, H = 1080, 1350
-    img = Image.new("RGB", (W, H), "#0F172A")  # 다크 네이비 프리미엄 배경
-    draw = ImageDraw.Draw(img)
-
-    # 폰트
-    f_badge = _load_font(26, bold=True)
-    f_meta = _load_font(26, bold=False)
-    f_title = _load_font(46, bold=True)
-    f_sec_title = _load_font(28, bold=True)
-    f_body = _load_font(30, bold=False)
-    f_small = _load_font(24, bold=False)
-
-    pad = 56
+    W = 1080
+    pad = 32
     content_w = W - pad * 2
 
-    # 1) 상단 배지 & 증권사 메타
-    badge_text = f"DAILY PICK #{index}"
-    _draw_rounded_rect(draw, (pad, 48, pad + 230, 96), radius=12, fill="#3182F6")
-    draw.text((pad + 22, 57), badge_text, font=f_badge, fill="#FFFFFF")
+    f_badge = _load_font(24, bold=True)
+    f_meta = _load_font(24, bold=False)
+    f_title = _load_font(40, bold=True)
+    f_sub = _load_font(26, bold=False)
+    f_small = _load_font(22, bold=False)
 
-    tag_text = item.get("category_tag", "리서치")
-    _draw_rounded_rect(draw, (pad + 246, 48, pad + 420, 96), radius=12, fill="#1E293B", outline="#334155")
-    draw.text((pad + 268, 57), tag_text, font=f_badge, fill="#93C5FD")
+    # 임시 캔버스로 텍스트 높이 측정
+    tmp = Image.new("RGB", (W, 400), "#0F172A")
+    tdraw = ImageDraw.Draw(tmp)
+    title_lines = _wrap_text(tdraw, item.get("title", ""), f_title, content_w)[:2]
 
-    meta_text = f"{item.get('broker', '')} · {date_str}"
-    mb = draw.textbbox((0, 0), meta_text, font=f_meta)
-    draw.text((W - pad - (mb[2] - mb[0]), 57), meta_text, font=f_meta, fill="#94A3B8")
-
-    # 2) 리포트 제목
-    y = 128
-    title_lines = _wrap_text(draw, item.get("title", ""), f_title, content_w)[:2]
-    for tl in title_lines:
-        draw.text((pad, y), tl, font=f_title, fill="#F8FAFC")
-        y += 60
-    y += 18
-
-    # 3) 박스 1: 왜 이런 흐름인가? (인과관계 2줄 요약)
     hook_raw = (item.get("one_line_hook") or "").strip()
-    hook_lines_raw = [ln.strip() for ln in hook_raw.splitlines() if ln.strip()]
-    if not hook_lines_raw:
-        hook_lines_raw = [item.get("executive_summary", "").replace("🎯", "").strip()]
+    first_hook = next((ln.strip() for ln in hook_raw.splitlines() if ln.strip()), "")
+    sub_lines = _wrap_text(tdraw, first_hook, f_sub, content_w)[:2] if first_hook else []
 
-    wrapped_hook: List[str] = []
-    for hl in hook_lines_raw[:2]:
-        wrapped_hook.extend(_wrap_text(draw, f"• {hl}", f_body, content_w - 56)[:3])
+    header_h = 34 + 44 + 18 + (len(title_lines) * 52) + (len(sub_lines) * 36 + 10 if sub_lines else 0) + 18
 
-    box1_h = 74 + len(wrapped_hook) * 44 + 24
-    _draw_rounded_rect(draw, (pad, y, W - pad, y + box1_h), radius=20, fill="#1E293B", outline="#334155")
-    draw.text((pad + 28, y + 22), "핵심 원인 & 인과 요약", font=f_sec_title, fill="#60A5FA")
-    cy = y + 68
-    for wl in wrapped_hook:
-        draw.text((pad + 28, cy), wl, font=f_body, fill="#E2E8F0")
-        cy += 44
-    y += box1_h + 22
-
-    # 4) 박스 2: 투자 시사점 (액션 포인트)
-    takeaways = item.get("key_takeaways", [])
-    take_text = takeaways[0] if takeaways else item.get("chart_reading_tip", "").replace("🔍", "").strip()
-    wrapped_take = _wrap_text(draw, take_text, f_body, content_w - 56)[:3]
-    box2_h = 74 + len(wrapped_take) * 44 + 24
-    _draw_rounded_rect(draw, (pad, y, W - pad, y + box2_h), radius=20, fill="#172554", outline="#2563EB")
-    draw.text((pad + 28, y + 22), "투자 시사점 & 대응", font=f_sec_title, fill="#93C5FD")
-    cy = y + 68
-    for wl in wrapped_take:
-        draw.text((pad + 28, cy), wl, font=f_body, fill="#DBEAFE")
-        cy += 44
-    y += box2_h + 24
-
-    # 5) 하단 차트 썸네일 영역 (남은 공간 활용)
-    footer_h = 66
-    avail_h = H - y - footer_h - 16
+    # 차트 이미지 준비 및 리사이즈 (가로 100% 꽉 채움)
+    c_img = None
     charts = item.get("charts", [])
-    if charts and avail_h > 220:
+    if charts:
         chart_rel = charts[0].get("url", "")
         chart_abs = os.path.join(DOCS_DIR, chart_rel) if chart_rel else ""
         if chart_abs and os.path.exists(chart_abs):
-            _draw_rounded_rect(draw, (pad, y, W - pad, y + avail_h), radius=20, fill="#FFFFFF")
-            chart_title = item.get("chart_title") or "핵심 차트 미리보기"
-            draw.text((pad + 24, y + 16), f"Chart: {chart_title[:42]}", font=f_small, fill="#334155")
             try:
-                c_img = Image.open(chart_abs).convert("RGB")
-                max_cw = content_w - 32
-                max_ch = avail_h - 62
-                c_img.thumbnail((max_cw, max_ch), Image.Resampling.LANCZOS)
-                cx = pad + (content_w - c_img.width) // 2
-                cy = y + 52 + (max_ch - c_img.height) // 2
-                img.paste(c_img, (cx, cy))
+                raw_im = Image.open(chart_abs).convert("RGB")
+                trimmed = _trim_whitespace(raw_im, margin=18)
+                target_w = content_w - 24
+                ratio = target_w / trimmed.width
+                target_h = int(trimmed.height * ratio)
+                # 너무 길어지지 않도록 최대 높이 제한 (최대 1500px)
+                if target_h > 1500:
+                    target_h = 1500
+                    target_w = int(trimmed.width * (target_h / trimmed.height))
+                c_img = trimmed.resize((target_w, target_h), Image.Resampling.LANCZOS)
             except Exception as e:
-                print(f"[카드뉴스] 차트 삽입 실패: {e}")
+                print(f"[카드뉴스] 차트 로드 실패: {e}")
 
-    # 6) 푸터
-    draw.text((pad, H - 52), "MORNING RESEARCH MAGAZINE", font=f_small, fill="#64748B")
-    right_footer = "자세한 차트 확대·용어 해설은 웹 매거진에서"
+    chart_box_h = (52 + c_img.height + 16) if c_img else 300
+    footer_h = 54
+    H = header_h + chart_box_h + footer_h
+
+    img = Image.new("RGB", (W, H), "#0F172A")
+    draw = ImageDraw.Draw(img)
+
+    # 1) 상단 배지 & 메타
+    _draw_rounded_rect(draw, (pad, 34, pad + 210, 78), radius=10, fill="#3182F6")
+    draw.text((pad + 18, 42), f"DAILY PICK #{index}", font=f_badge, fill="#FFFFFF")
+
+    tag_text = item.get("category_tag", "리서치")
+    _draw_rounded_rect(draw, (pad + 224, 34, pad + 388, 78), radius=10, fill="#1E293B", outline="#334155")
+    draw.text((pad + 244, 42), tag_text, font=f_badge, fill="#93C5FD")
+
+    meta_text = f"{item.get('broker', '')} · {date_str}"
+    mb = draw.textbbox((0, 0), meta_text, font=f_meta)
+    draw.text((W - pad - (mb[2] - mb[0]), 42), meta_text, font=f_meta, fill="#94A3B8")
+
+    # 2) 제목 & 핵심 1줄
+    y = 96
+    for tl in title_lines:
+        draw.text((pad, y), tl, font=f_title, fill="#F8FAFC")
+        y += 52
+    if sub_lines:
+        y += 6
+        for sl in sub_lines:
+            draw.text((pad, y), sl, font=f_sub, fill="#93C5FD")
+            y += 36
+    y += 14
+
+    # 3) 대형 차트 카드 영역
+    _draw_rounded_rect(draw, (pad, y, W - pad, y + chart_box_h), radius=18, fill="#FFFFFF")
+    chart_title = item.get("chart_title") or "핵심 차트"
+    draw.text((pad + 20, y + 14), f"[핵심 차트] {chart_title[:48]}", font=f_small, fill="#1E293B")
+    if c_img:
+        cx = pad + (content_w - c_img.width) // 2
+        cy = y + 48
+        img.paste(c_img, (cx, cy))
+
+    # 4) 푸터
+    fy = y + chart_box_h + 14
+    draw.text((pad, fy), "MORNING RESEARCH MAGAZINE", font=f_small, fill="#64748B")
+    right_footer = "세부 독해 팁·용어 해설은 아래 매거진 버튼에서"
     rb = draw.textbbox((0, 0), right_footer, font=f_small)
-    draw.text((W - pad - (rb[2] - rb[0]), H - 52), right_footer, font=f_small, fill="#64748B")
+    draw.text((W - pad - (rb[2] - rb[0]), fy), right_footer, font=f_small, fill="#64748B")
 
     filename = f"{item['research_id']}_card.png"
     out_path = os.path.join(out_dir, filename)
