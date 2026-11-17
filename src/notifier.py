@@ -26,11 +26,18 @@ def send_hybrid_notification(payload: Dict) -> bool:
         return False
 
     date_str = payload.get("date", "")
+    mode = payload.get("mode", "today")
     picks = payload.get("picks", [])
     if not picks:
         return False
 
-    lines = [f"☀️ <b>{html.escape(date_str)} 네이버 리서치 모닝 픽</b>"]
+    mode_badge = ""
+    if mode == "next_best":
+        mode_badge = " · <i>최근 미발송 베스트</i>"
+    elif mode == "mixed":
+        mode_badge = " · <i>오늘 + 최근 베스트</i>"
+
+    lines = [f"☀️ <b>{html.escape(date_str)} 네이버 리서치 모닝 픽</b>{mode_badge}"]
     for idx, p in enumerate(picks, 1):
         broker = html.escape(p.get("broker", ""))
         title = html.escape(p.get("title", ""))

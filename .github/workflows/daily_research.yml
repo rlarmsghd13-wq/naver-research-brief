@@ -2,8 +2,10 @@ name: Daily Naver Research Hybrid Brief
 
 on:
   schedule:
-    # 평일 오전 07:35 KST (전일 22:35 UTC) 자동 실행
-    - cron: "35 22 * * 0-4"
+    # 1차 체크: 평일 오전 07:50 KST (전일 22:50 UTC) - 오늘 리포트 5건 이상이면 즉시 발송
+    - cron: "50 22 * * 0-4"
+    # 2차 체크: 평일 오전 08:35 KST (전일 23:35 UTC) - 1차 미발송 시 최근 미발송 베스트 포함 발송
+    - cron: "35 23 * * 0-4"
   workflow_dispatch:
 
 permissions:
@@ -38,7 +40,12 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           WEB_APP_URL: ${{ vars.WEB_APP_URL || 'https://rlarmsghd13-wq.github.io/naver-research-brief/' }}
         run: |
-          python main.py
+          # 1차(22:xx UTC)에는 --no-fallback으로 5건 이상 모였을 때만 즉시 발송, 2차(23:xx UTC) 또는 수동 실행에는 fallback 허용
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%H)" = "22" ]; then
+            python main.py --no-fallback
+          else
+            python main.py
+          fi
 
       - name: Commit and push updated magazine docs
         run: |
